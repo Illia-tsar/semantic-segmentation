@@ -27,8 +27,8 @@
   ## Choice of learning strategy:
   The suggested solution was carried out in three stages: training Neural Network on 192x192 images for 10 epochs, then 384x384 images for 5 epochs and, finally, 768x768 images for 2 epochs. It became possible because modern 
   convolutional neural networks support input images of arbitrary resolution. To decrease the training time, one can start training on lower resolution images first and continue training on higher resolution images for fewer 
-  epochs. In addition, a model pretrained on lower resolution images first generalizes better since a pixel information is less available and high order features tend to be used. .The number of **STEPS_PER_EPOCH** was set manually 
-  due to lack of _computational capability_: 192x192 images – 300, 384x384 – 600, 768x768 - 800.
+  epochs. In addition, a model pretrained on lower resolution images first generalizes better since a pixel information is less available and high order features tend to be used. .The number of **STEPS_PER_EPOCH** and **BATCH_SIZE** were set manually 
+  due to lack of _computational capability_: 192x192 images – (300,16), 384x384 – (600,8), 768x768 - (800,4).
   
   ## Choice of loss function:
   This solution proposes using _categorical cross-entropy loss_ function. The main motivation for this is that _cross-entropy_ is a standard choice for NNs and it shows pretty good performance. Because our model deals with sparse 
