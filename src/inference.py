@@ -4,11 +4,11 @@ from imageio.v2 import imread
 from utils import rle_encode
 import os
 import tensorflow as tf
-from keras import models
 from tqdm import tqdm
+from model import unet_model
 
 
-def write_result():
+def write_result(model, threshold=0.5):
     """
     Write result to csv
 
@@ -21,7 +21,6 @@ def write_result():
         4.2.Map probabilities of last dimension to class labels
         4.3.Encode mask and append to submission dict
     """
-    model = models.load_model(LOAD_MODEL, compile=False) # load model specified in MODEL_PATH constant
     test_names = os.listdir(TEST_IMG_DIR)    # get test images names
 
     submission = {'ImageId': [], 'EncodedPixels': []}
@@ -33,9 +32,7 @@ def write_result():
 
         y_pred = model(np.array(imgs))  # get prediction for an image
 
-        # map the last dim from size 2 to 1 transforming probabilities into class labels
-        mask = tf.argmax(y_pred, axis=-1)
-        mask = mask[..., tf.newaxis].numpy()
+        mask = tf.cast(y_pred > threshold, float).numpy() # map probabilities to labels given threshold
 
         enc_mask = rle_encode(mask) # encode obtained mask with rle
 
@@ -48,7 +45,10 @@ def write_result():
 
 if __name__ == '__main__':
     TEST_IMG_DIR = '../data/test_v2/'  # test images directory
-    LOAD_MODEL = '../model/final_model.h5'  # model to make predictions
+    LOAD_MODEL = '../model/model3_weights.hdf5'  # model to make predictions
     SAVE_PATH = '../submission/submission.csv'  # path to save predictions
 
-    write_result()
+    # load model specified in LOAD_MODEL constant
+    m = unet_model(n_filters=8)
+    m.load_weights(LOAD_MODEL)
+    write_result(m)
