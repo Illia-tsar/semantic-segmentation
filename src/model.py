@@ -6,6 +6,8 @@ from tensorflow.keras.layers import Conv2DTranspose
 from tensorflow.keras.layers import MaxPooling2D
 from tensorflow.keras.layers import Dropout
 from tensorflow.keras.layers import concatenate
+from tensorflow.keras.layers import BatchNormalization
+from tensorflow.keras.layers import Activation
 
 
 def downsampling_block(inputs=None, n_filters=32, dropout_prob=0.0, max_pooling=True):
@@ -21,16 +23,10 @@ def downsampling_block(inputs=None, n_filters=32, dropout_prob=0.0, max_pooling=
         next_layer, skip_connection --  Next layer and skip connection outputs
     """
 
-    conv = Conv2D(n_filters,
-                  3,
-                  activation='relu',
-                  padding='same',
-                  kernel_initializer='he_normal')(inputs)
-    conv = Conv2D(n_filters,
-                  3,
-                  activation='relu',
-                  padding='same',
-                  kernel_initializer='he_normal')(conv)
+    conv = Conv2D(n_filters, (3, 3), padding='same', kernel_initializer='he_normal')(inputs)
+    conv = BatchNormalization()(conv)
+    conv = Activation('relu')(conv)
+    conv = Conv2D(n_filters, (3, 3), activation='relu', padding='same', kernel_initializer='he_normal')(conv)
 
     # if dropout_prob > 0 add a dropout layer, with the variable dropout_prob as parameter
     if dropout_prob > 0:
@@ -59,29 +55,19 @@ def upsampling_block(expansive_input, contractive_input, n_filters=32):
         conv -- Tensor output
     """
 
-    up = Conv2DTranspose(
-        n_filters,
-        3,
-        strides=(2, 2),
-        padding='same')(expansive_input)
+    up = Conv2DTranspose(n_filters, (3, 3), strides=(2, 2), padding='same')(expansive_input)
 
     # Merge the previous output and the contractive_input
     merge = concatenate([up, contractive_input], axis=3)
-    conv = Conv2D(n_filters,
-                  3,
-                  activation='relu',
-                  padding='same',
-                  kernel_initializer='he_normal')(merge)
-    conv = Conv2D(n_filters,
-                  3,
-                  activation='relu',
-                  padding='same',
-                  kernel_initializer='he_normal')(conv)
+    conv = Conv2D(n_filters, (3, 3), padding='same', kernel_initializer='he_normal')(merge)
+    conv = BatchNormalization()(conv)
+    conv = Activation('relu')(conv)
+    conv = Conv2D(n_filters, (3, 3), activation='relu', padding='same', kernel_initializer='he_normal')(conv)
 
     return conv
 
 
-def unet_model(input_size=(768, 768, 3), n_filters=32, n_classes=2):
+def unet_model(input_size=(768, 768, 3), n_filters=32):
     """
     Unet model
 
@@ -108,15 +94,9 @@ def unet_model(input_size=(768, 768, 3), n_filters=32, n_classes=2):
     ublock8 = upsampling_block(ublock7, dblock2[1], 2 * n_filters)
     ublock9 = upsampling_block(ublock8, dblock1[1], n_filters)
 
-    conv9 = Conv2D(n_filters,
-                   3,
-                   activation='relu',
-                   padding='same',
-                   kernel_initializer='he_normal')(ublock9)
+    # used activation 'sigmoid' because of BCE loss
+    conv9 = Conv2D(1, (1, 1), activation='sigmoid', padding='same', kernel_initializer='glorot_uniform')(ublock9)
 
-    # Added a Conv2D layer with n_classes filter, kernel size of 1 and a 'same' padding
-    conv10 = Conv2D(n_classes, 1, padding='same')(conv9)
-
-    model = tf.keras.Model(inputs=inputs, outputs=conv10, name='U-Net')
+    model = tf.keras.Model(inputs=inputs, outputs=conv9, name='U-Net')
 
     return model
