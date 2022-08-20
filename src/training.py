@@ -12,9 +12,9 @@ from model import unet_model
 import tensorflow.keras.backend as K
 from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, EarlyStopping
 import pickle
-from keras import models
 from keras.utils import plot_model
 import matplotlib.pyplot as plt
+from tensorflow.keras.metrics import BinaryIoU
 
 
 def image_generator(img_names, batch_size, shape=(768, 768)):
@@ -80,26 +80,16 @@ def dice_score(y_true, y_pred, smooth=1):
     """
     Dice Score metric
 
-    Calculates the Dice Score as 2 * intersection / union
+    Arguments:
+        y_true -- true masks of shape (batch_size, height, width, 1)
+        y_pred -- predicted probabilities of shape (batch_size, height, width, 1)
+        smooth -- parameter to avoid zero division
+    Returns:
+        Dice score focused on class 1
     """
-    y_pred = tf.argmax(y_pred, axis=-1)
-    y_pred = tf.cast(y_pred[..., tf.newaxis], float)
-    intersection = K.sum(y_true * y_pred, axis=[1, 2, 3]) # intersection between predicted and true values
-    union = K.sum(y_true, axis=[1, 2, 3]) + K.sum(y_pred, axis=[1, 2, 3]) # union between predicted and true values
-    return K.mean((2. * intersection + smooth) / (union + smooth), axis=0)
-
-
-def IoU(y_true, y_pred):
-    """
-    IoU metric
-
-    Calculates Intersection over Union as intersection / (union - intersection)
-    """
-    y_pred = tf.argmax(y_pred, axis=-1)
-    y_pred = tf.cast(y_pred[..., tf.newaxis], float)
     intersection = K.sum(y_true * y_pred, axis=[1, 2, 3])
     union = K.sum(y_true, axis=[1, 2, 3]) + K.sum(y_pred, axis=[1, 2, 3])
-    return K.mean(intersection / (union - intersection + 1.0), axis=0)
+    return K.mean((2. * intersection + smooth) / (union + smooth), axis=0)
 
 
 def train(model=None, shape=(768, 768), plot_model_struct=False, save_history=True):
@@ -133,14 +123,16 @@ def train(model=None, shape=(768, 768), plot_model_struct=False, save_history=Tr
     val_batch_gen = image_generator(val_names, BATCH_SIZE, shape)   # validation batch generator
 
     if model is None:
-        model = unet_model(input_size=(shape[0], shape[1], 3), n_filters=8, n_classes=2)    # init U-Net
+        model = unet_model(input_size=(shape[0], shape[1], 3), n_filters=8)    # init U-Net
 
-    model.compile(optimizer='Adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-                  metrics=[dice_score, IoU])
+    # we use dice_score as evaluation metric to estimate model confidence at predicting class 1
+    # BinaryIoU is used to observe model's accuracy predicting classes 0 and 1 and is calculated as: (IoU_1 + IoU_0) / 2.0
+    model.compile(optimizer='Adam', loss=tf.keras.losses.BinaryCrossentropy(),
+                  metrics=[dice_score, BinaryIoU()])
 
     # save the best model during training
     checkpoint = ModelCheckpoint(SAVE_MODEL, monitor='val_dice_score', verbose=1, save_best_only=True,
-                                 mode='max', save_weights_only=False)
+                                 mode='max', save_weights_only=True)
 
     # control learning rate decay
     lr_decay = ReduceLROnPlateau(monitor='val_dice_score', verbose=1, mode='max', patience=3,
@@ -173,7 +165,7 @@ def train(model=None, shape=(768, 768), plot_model_struct=False, save_history=Tr
 def plot_history():
     """
     Main plotting function
-    It displays plots split by metrics(loss, dice score, IoU) for history dumps listed in HISTORY_TO_PLOT
+    It displays plots split by metrics(loss, dice score, BinaryIoU) for history dumps listed in HISTORY_TO_PLOT
     The function displays curves based on values gained assessing model's performance on training and validation sets
     """
     history = []
@@ -186,7 +178,7 @@ def plot_history():
         with open(h, 'rb') as f:
             history.append(pickle.load(f))
 
-    _, ax = plt.subplots(1, 3, figsize=(14, 12)) # create 3 subplots(3 metrics: loss, dice score, IoU)
+    _, ax = plt.subplots(1, 3, figsize=(14, 12)) # create 3 subplots(3 metrics: loss, dice score, BinaryIoU)
 
     # add values to declared lists
     for row in history:
@@ -196,8 +188,8 @@ def plot_history():
         dice_sc.extend(row['dice_score'])
         val_dice_sc.extend(row['val_dice_score'])
 
-        iou.extend(row['IoU'])
-        val_iou.extend(row['val_IoU'])
+        iou.extend(row['binary_io_u'])
+        val_iou.extend(row['val_binary_io_u'])
 
     # plot the data
     with plt.xkcd():
@@ -211,8 +203,8 @@ def plot_history():
         ax[1].legend()
         ax[1].grid(True)
 
-        ax[2].plot(range(len(iou)), iou, label='IoU')
-        ax[2].plot(range(len(val_iou)), val_iou, label='val_IoU')
+        ax[2].plot(range(len(iou)), iou, label='binary_io_u')
+        ax[2].plot(range(len(val_iou)), val_iou, label='val_binary_io_u')
         ax[2].legend()
         ax[2].grid(True)
         plt.show()
@@ -226,15 +218,15 @@ if __name__ == '__main__':
     # constants
     TRAIN_IMG_DIR = '../data/train_v2/'    # training images path
     SEGMENTATION = '../data/train_ship_segmentations_v2.csv'    # training images segmentations path
-    SAVE_MODEL = '../model/final_model.h5'  # model saving path
-    LOAD_MODEL = '../model/final_model.h5'    # path for model loading
-    SAVE_HISTORY = '../model/history/history2.pickle'   # history saving path
+    SAVE_MODEL = '../model/model3_weights.hdf5'  # model saving path
+    LOAD_MODEL = '../model/model2_weights.hdf5'    # path for model loading
+    SAVE_HISTORY = '../model/history/history3.pickle'   # history saving path
     PLOT_MODEL_PATH = '../model/model.png'  # path specifies where to save generated model plot
     # plot history for training model on 192x192 images for 10 epochs and 384x384 images for 5 epochs
     HISTORY_TO_PLOT = ['../model/history/history1.pickle', '../model/history/history2.pickle']
-    EPOCHS = 1
-    BATCH_SIZE = 4
-    MAX_STEPS_TRAIN = 800
-    MAX_STEPS_VAL = 800
+    EPOCHS = 2
+    BATCH_SIZE = 2
+    MAX_STEPS_TRAIN = 1600
+    MAX_STEPS_VAL = 1600
 
     plot_history()
