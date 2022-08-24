@@ -6,6 +6,7 @@ import os
 import tensorflow as tf
 from tqdm import tqdm
 from model import unet_model
+from constants import *
 
 
 def write_result(model, threshold=0.5):
@@ -17,7 +18,7 @@ def write_result(model, threshold=0.5):
     2.Get all test images names
     3.Read and normalize images one by one
     4.For each image:
-        4.1.Get prediction of shape (1, height, width, n_classes=2)
+        4.1.Get prediction of shape (1, height, width, 1)
         4.2.Map probabilities of last dimension to class labels
         4.3.Encode mask and append to submission dict
     """
@@ -40,14 +41,10 @@ def write_result(model, threshold=0.5):
         submission['EncodedPixels'].append(enc_mask if len(enc_mask) > 0 else None)
 
     df = pd.DataFrame(submission).set_index(keys='ImageId', drop=True)
-    df.to_csv(SAVE_PATH)
+    df.to_csv(SAVE_SUBMISSION)
 
 
 if __name__ == '__main__':
-    TEST_IMG_DIR = '../data/test_v2/'  # test images directory
-    LOAD_MODEL = '../model/model3_weights.hdf5'  # model to make predictions
-    SAVE_PATH = '../submission/submission.csv'  # path to save predictions
-
     # load model specified in LOAD_MODEL constant
     m = unet_model(n_filters=8)
     m.load_weights(LOAD_MODEL)
