@@ -1,13 +1,7 @@
-import numpy as np
 import pandas as pd
 import tensorflow as tf
-from imageio.v2 import imread
-from utils import rle_decode
-import os
+from utils import load_dataset, prepare_dataset
 from sklearn.model_selection import train_test_split
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from cv2 import resize
-from PIL import Image
 from model import unet_model
 import tensorflow.keras.backend as K
 from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, EarlyStopping
@@ -15,65 +9,7 @@ import pickle
 from keras.utils import plot_model
 import matplotlib.pyplot as plt
 from tensorflow.keras.metrics import BinaryIoU
-
-
-def image_generator(img_names, batch_size, shape=(768, 768)):
-    """
-    Image Generator
-
-    Arguments:
-        img_names -- pandas series with image ids
-        batch_size -- int denoting the batch size
-        shape -- tuple denoting the dims of output image
-    Returns:
-        tuple combined of normalized images and masks
-    """
-    batches = img_names.reset_index().to_numpy()    # image ids
-    while True:
-        np.random.shuffle(batches)
-        for idx in range(img_names.shape[0] // batch_size):
-            batch_img = batches[idx * batch_size: (idx + 1) * batch_size, 0]    # get #batch_size img ids
-            batch_masks = batches[idx * batch_size: (idx + 1) * batch_size, 1]  # get #batch_size encoded image masks
-
-            imgs = [resize(imread(os.path.join(TRAIN_IMG_DIR, img_id)), shape)
-                    for img_id in batch_img]    # read images by ids and resize them to the given shape
-            masks = [np.array(Image.fromarray(rle_decode(msk)).resize(shape))[:, :, np.newaxis]
-                     for msk in batch_masks]    # read masks by ids and resize them to the given shape
-            yield np.array(imgs) / 255.0, np.array(masks, dtype=float)
-
-
-def augmenter(gen):
-    """
-    Image Augmenter
-
-    Arguments:
-        gen -- image generator
-    Returns:
-         tuple combined of normalized augmented images and masks
-    """
-    image_gen = ImageDataGenerator(featurewise_center=False,
-                                   samplewise_center=False,
-                                   rotation_range=15,
-                                   width_shift_range=0.1,
-                                   height_shift_range=0.1,
-                                   shear_range=0.01,
-                                   zoom_range=[0.9, 1.25],
-                                   horizontal_flip=True,
-                                   vertical_flip=True,
-                                   fill_mode='reflect',
-                                   data_format='channels_last')
-    for imgs, msks in gen:
-        seed = np.random.choice(range(9999))    # use the same seed for image and mask to keep them in sync
-
-        aug_img = image_gen.flow(255 * imgs,
-                                 batch_size=imgs.shape[0],
-                                 seed=seed,
-                                 shuffle=True)
-        aug_msk = image_gen.flow(msks,
-                                 batch_size=imgs.shape[0],
-                                 seed=seed,
-                                 shuffle=True)
-        yield next(aug_img) / 255.0, next(aug_msk)
+from constants import *
 
 
 def dice_score(y_true, y_pred, smooth=1):
@@ -92,7 +28,31 @@ def dice_score(y_true, y_pred, smooth=1):
     return K.mean((2. * intersection + smooth) / (union + smooth), axis=0)
 
 
-def train(model=None, shape=(768, 768), plot_model_struct=False, save_history=True):
+def create_model(n_filters=8, plot_model_struct=False):
+    """
+    Model creating function
+
+    Arguments:
+        n_filters -- number of filters to start with(further layers will have [n_filters * 2**n] filters)
+        plot_model_struct -- boolean denoting whether to plot model struct or not
+    Returns:
+        tf.keras.Model
+    """
+    model = unet_model(input_size=(None, None, 3), n_filters=n_filters)
+
+    # we use dice_score as evaluation metric to estimate model's confidence at predicting class 1
+    # BinaryIoU is used to observe model's accuracy predicting classes 0 and 1 and is calculated as: (IoU_1 + IoU_0) / 2.0
+    model.compile(optimizer='Adam', loss=tf.keras.losses.BinaryCrossentropy(),
+                  metrics=[dice_score, BinaryIoU(threshold=0.5)])
+
+    if plot_model_struct:
+        plot_model(model, to_file=PLOT_MODEL_PATH, show_shapes=True,
+                   show_dtype=True, show_layer_activations=True)
+
+    return model
+
+
+def train(model, img_size=768, save_history=True):
     """
     Main training function
 
@@ -100,11 +60,10 @@ def train(model=None, shape=(768, 768), plot_model_struct=False, save_history=Tr
     1.Get masks
     2.Filter out no-ships images
     3.Split data into training and validation sets
-    4.Get data augmenting generator for training set and image generator for validation set
-    5.Compile and fit the model
+    4.Compile and fit the model
 
     Arguments:
-        shape -- the shape of an image
+        img_size -- the size of an image
         model -- U-Net model
         plot_model_struct -- boolean denoting whether to plot model struct or not
         save_history -- boolean denoting whether to store history or not
@@ -119,16 +78,13 @@ def train(model=None, shape=(768, 768), plot_model_struct=False, save_history=Tr
     # split the data into training and validation sets
     train_names, val_names = train_test_split(masks, test_size=0.1, random_state=17)
 
-    train_batch_gen = augmenter(image_generator(train_names, BATCH_SIZE, shape)) # train batch generator
-    val_batch_gen = image_generator(val_names, BATCH_SIZE, shape)   # validation batch generator
+    # load images and corresponding masks
+    train_ds = load_dataset(train_names, img_size=img_size)
+    val_ds = load_dataset(val_names, img_size=img_size)
 
-    if model is None:
-        model = unet_model(input_size=(shape[0], shape[1], 3), n_filters=8)    # init U-Net
-
-    # we use dice_score as evaluation metric to estimate model confidence at predicting class 1
-    # BinaryIoU is used to observe model's accuracy predicting classes 0 and 1 and is calculated as: (IoU_1 + IoU_0) / 2.0
-    model.compile(optimizer='Adam', loss=tf.keras.losses.BinaryCrossentropy(),
-                  metrics=[dice_score, BinaryIoU()])
+    # augment and resize obtained datasets
+    train_ds = prepare_dataset(train_ds, img_size=img_size, augment=True)
+    val_ds = prepare_dataset(val_ds, img_size=img_size)
 
     # save the best model during training
     checkpoint = ModelCheckpoint(SAVE_MODEL, monitor='val_dice_score', verbose=1, save_best_only=True,
@@ -136,30 +92,26 @@ def train(model=None, shape=(768, 768), plot_model_struct=False, save_history=Tr
 
     # control learning rate decay
     lr_decay = ReduceLROnPlateau(monitor='val_dice_score', verbose=1, mode='max', patience=3,
-                                 cooldown=2, factor=0.6, min_lr=1e-5)
+                                 cooldown=2, factor=0.5, min_lr=1e-5)
 
     # handle overfitting
-    stopping = EarlyStopping(monitor='val_dice_score', min_delta=1e-5, mode='max', patience=10)
+    stopping = EarlyStopping(monitor='val_dice_score', min_delta=1e-5, mode='max', patience=4)
     callbacks = [checkpoint, lr_decay, stopping]
 
     train_steps_epoch = min(MAX_STEPS_TRAIN, train_names.shape[0] // BATCH_SIZE)
     val_steps_epoch = min(MAX_STEPS_VAL, val_names.shape[0] // BATCH_SIZE)
 
-    model_history = model.fit_generator(train_batch_gen,
-                                        steps_per_epoch=train_steps_epoch,
-                                        epochs=EPOCHS,
-                                        verbose=1,
-                                        validation_data=val_batch_gen,
-                                        validation_steps=val_steps_epoch,
-                                        callbacks=callbacks)
+    model_history = model.fit(train_ds,
+                              steps_per_epoch=train_steps_epoch,
+                              epochs=EPOCHS,
+                              verbose=1,
+                              validation_data=val_ds,
+                              validation_steps=val_steps_epoch,
+                              callbacks=callbacks)
 
     if save_history:
         with open(SAVE_HISTORY, 'wb') as f:
             pickle.dump(model_history.history, f)  # dump history data for future visualization
-
-    if plot_model_struct:
-        plot_model(model, to_file=PLOT_MODEL_PATH, show_shapes=True,
-                   show_dtype=True, show_layer_activations=True)
 
 
 def plot_history():
@@ -214,19 +166,5 @@ if __name__ == '__main__':
     # enable memory growth so that runtime initialization don't allocate all memory on the device
     physical_devices = tf.config.list_physical_devices('GPU')
     tf.config.experimental.set_memory_growth(physical_devices[0], True)
-
-    # constants
-    TRAIN_IMG_DIR = '../data/train_v2/'    # training images path
-    SEGMENTATION = '../data/train_ship_segmentations_v2.csv'    # training images segmentations path
-    SAVE_MODEL = '../model/model3_weights.hdf5'  # model saving path
-    LOAD_MODEL = '../model/model2_weights.hdf5'    # path for model loading
-    SAVE_HISTORY = '../model/history/history3.pickle'   # history saving path
-    PLOT_MODEL_PATH = '../model/model.png'  # path specifies where to save generated model plot
-    # plot history for training model on 192x192 images for 10 epochs and 384x384 images for 5 epochs
-    HISTORY_TO_PLOT = ['../model/history/history1.pickle', '../model/history/history2.pickle']
-    EPOCHS = 2
-    BATCH_SIZE = 2
-    MAX_STEPS_TRAIN = 1600
-    MAX_STEPS_VAL = 1600
 
     plot_history()
